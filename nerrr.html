@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpaceSensAR – ISS Sensory Experience Platform MVP</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <!-- Chosen Palette: Cosmic Neutrals (Slate-950, Amber-400 accent) -->
+    <!-- Application Structure Plan: Dashboard/Menu structure. A static header handles global navigation and settings (language, auth). The main content area dynamically switches between pages (Home, 3D Cupola View, Microgravity Sim, Education). This structure is chosen for optimal performance in a single-page app and intuitive non-linear exploration of the four main features. -->
+    <!-- Visualization & Content Choices: 1. ISS Tracking -> Goal: Inform/Engage -> Viz: 3D Earth and ISS marker (Three.js Canvas) + Data Panel (HTML/JS) -> Interaction: Live update, 3D camera control (mouse drag, implemented in JS) -> Justification: Provides the core immersive experience and real-time data connection. Library: Three.js. 2. Microgravity Sim -> Goal: Train/Engage -> Viz: 3D Zero-G Environment (Three.js Canvas) + Score Tracker (HTML/JS) -> Interaction: Start/Stop button linked to mock physics and score ticks, 3D element movement. Library: Three.js. 3. Features/Education -> Goal: Organize/Inform -> Presentation: Static/Interactive cards (HTML/Tailwind) + Detail Pane (HTML/JS update). 4. Bilingual Support -> Goal: Accessibility -> Presentation: JS helper (t()) updates all strings dynamically. -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #030712; /* slate-950 */
+            color: #f9fafb; /* gray-50 */
+        }
+        .text-glow {
+            text-shadow: 0 0 4px rgba(250, 204, 21, 0.5); /* amber-400 */
+        }
+        .canvas-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        /* Style to hide Three.js errors gracefully */
+        .three-error {
+            display: none; 
+            color: #f87171; /* red-400 */
+            padding: 1rem;
+            text-align: center;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <div id="header-container"></div>
+
+    <main id="main-content" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-10 flex-grow w-full"></main>
+
+    <footer class="bg-slate-900 border-t border-slate-700 mt-auto">
+        <div id="footer-content" class="max-w-7xl mx-auto py-4 px-4 sm:px-6 lg:px-8 text-center text-sm text-slate-500"></div>
+    </footer>
+
+    <script>
+        // --- GLOBAL STATE & DATA ---
+        let currentPage = 'home';
+        let language = 'en';
+        let isAuthenticated = false;
+        const user = { name: "Pilot", id: "user-replit-42" };
+        let issPosition = null;
+        const ISS_API = 'https://api.wheretheiss.at/v1/satellites/25544';
+        
+        // Microgravity Simulation State
+        let isSimRunning = false;
+        let simScore = 0;
+        let simInterval = null;
+
+        // General 3D globals (shared between Cupola and Microgravity)
+        let scene = null, camera = null, renderer = null; 
+        let isThreeJsInitialized = false;
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        
+        // Cupola specific objects
+        let earthMesh = null, issMarker = null;
+        const earthRotationSpeed = 0.001;
+        
+        // Microgravity specific objects
+        let floatingObjects = [];
+        const simObjectCount = 8;
+        const objectDriftSpeed = 0.0005;
+
+        const translations = {
+            en: {
+                title: "SpaceSensAR",
+                tagline: "ISS Sensory Experience Platform",
+                home: "Home",
+                cupola: "Cupola View (3D)",
+                microgravity: "Microgravity Sim",
+                education: "ISS Education",
+                login: "Log In",
+                logout: "Log Out",
+                welcomeMsg: (name) => `Welcome aboard, ${name}!`,
+                dashboardDesc: "Access real-time data, explore 3D simulations, and track your astronaut training progress.",
+                cupolaDesc: "An immersive 3D web experience: track the ISS live and view Earth from the Cupola perspective using Three.js.",
+                
+                // Microgravity strings
+                microgravityDesc: "Practice essential skills in zero-gravity with physics-based challenges (e.g., fluid dynamics, object retrieval).",
+                challengeRetrieve: "Object Retrieval Drill",
+                challengeRetrieveDesc: "Navigate and collect detached equipment before it drifts away.",
+                challengeFluid: "Fluid Dynamics Test",
+                challengeFluidDesc: "Maneuver liquids across tanks using controlled bursts and minimal force.",
+                challengeRepair: "External Truss Repair",
+                challengeRepairDesc: "Use tool tethering and precise movements to secure a loose component.",
+                currentScore: "Current Score",
+                startChallenge: "Start Challenge",
+                stopChallenge: "Stop Challenge",
+                availableChallenges: "Available Challenges",
+                trainingTip: "Astronaut Training Tip",
+                trainingTipContent: "Momentum is conserved in microgravity! Use small, precise bursts of force to change direction.",
+                simPlaceholder: "[Interactive Physics Simulation Canvas]",
+                simTip: "Click 'Start Challenge' to begin training.",
+
+                // Education strings
+                educationDesc: "Learn about the vital benefits of ISS research: Climate Monitoring, Medical Advances, and Water Purification.",
+                climateMonitoring: "Climate Monitoring",
+                climateMonitoringDesc: "Interactive visualizations showing how ISS data contributes to climate science.",
+                medicalAdvances: "Medical Advances",
+                medicalAdvancesDesc: "Explaining ISS research leading to breakthroughs in health, aging, and disease treatments.",
+                waterPurification: "Water Purification",
+                waterPurificationDesc: "Modules detailing closed-loop life support systems and their terrestrial applications for sustainable water.",
+                tapForMore: "Tap for details",
+                selectModulePrompt: "Select a module above to view detailed research information.",
+                climateMonitoringDetail: "The ISS provides a unique, stable platform for continuous Earth observation, monitoring global climate indicators like cloud coverage, deforestation, and polar ice melt. This data validates ground-based models and offers critical long-term insights into climate change.",
+                medicalAdvancesDetail: "Studying human health in microgravity accelerates research on bone density loss, muscle atrophy, and immune system changes, mirroring challenges faced on Earth by the elderly or immobilized. Findings directly contribute to new treatments for these conditions.",
+                waterPurificationDetail: "ISS life support systems recycle 98% of all water, including sweat and urine. This ultra-efficient technology is being adapted for disaster relief, remote communities, and sustainable water management on Earth, proving essential for future human survival both in space and on our planet.",
+
+                comingSoon: "Feature development in progress...",
+                currentLang: "English",
+                issLat: "Latitude",
+                issLon: "Longitude",
+                issAlt: "Altitude (km)",
+                issVel: "Velocity (km/h)",
+                liveTracking: "Live ISS Position Data",
+            },
+            hi: {
+                title: "स्पेससेन्सएआर (SpaceSensAR)",
+                tagline: "अंतरिक्ष स्टेशन संवेदी अनुभव मंच",
+                home: "मुख्य पृष्ठ",
+                cupola: "कपोला दृश्य (3D)",
+                microgravity: "सूक्ष्म-गुरुत्वाकर्षण सिम",
+                education: "आईएसएस शिक्षा",
+                login: "लॉग इन करें",
+                logout: "लॉग आउट करें",
+                welcomeMsg: (name) => `स्वागत है, ${name}!`,
+                dashboardDesc: "वास्तविक समय डेटा एक्सेस करें, 3डी सिमुलेशन का अन्वेषण करें, और अपने अंतरिक्ष यात्री प्रशिक्षण की प्रगति ट्रैक करें।",
+                cupolaDesc: "एक आकर्षक 3डी वेब अनुभव: आईएसएस को ट्रैक करें और थ्री.जेएस का उपयोग करके कपोला परिप्रेक्ष्य से पृथ्वी देखें।",
+                
+                // Microgravity strings
+                microgravityDesc: "शून्य-गुरुत्वाकर्षण में आवश्यक कौशल का अभ्यास करें (जैसे द्रव गतिशीलता, वस्तु पुनर्प्राप्ति)।",
+                challengeRetrieve: "वस्तु पुनर्प्राप्ति ड्रिल",
+                challengeRetrieveDesc: "अलग हुए उपकरण को बहने से पहले नेविगेट करें और इकट्ठा करें।",
+                challengeFluid: "द्रव गतिशीलता परीक्षण",
+                challengeFluidDesc: "नियंत्रित फटने और न्यूनतम बल का उपयोग करके टैंकों के पार तरल पदार्थों का पैंतरेबाज़ी करें।",
+                challengeRepair: "बाहरी ट्रस मरम्मत",
+                challengeRepairDesc: "ढीले घटक को सुरक्षित करने के लिए उपकरण बांधने और सटीक चालों का उपयोग करें।",
+                currentScore: "वर्तमान स्कोर",
+                startChallenge: "चुनौती शुरू करें",
+                stopChallenge: "चुनौती रोकें",
+                availableChallenges: "उपलब्ध चुनौतियां",
+                trainingTip: "अंतरिक्ष यात्री प्रशिक्षण सुझाव",
+                trainingTipContent: "सूक्ष्म-गुरुत्वाकर्षण में गति संरक्षित रहती है! दिशा बदलने के लिए बल के छोटे, सटीक फटने का उपयोग करें।",
+                simPlaceholder: "[इंटरैक्टिव भौतिकी सिमुलेशन कैनवास]",
+                simTip: "प्रशिक्षण शुरू करने के लिए 'चुनौती शुरू करें' पर क्लिक करें।",
+
+
+                // Education strings
+                educationDesc: "आईएसएस अनुसंधान के महत्वपूर्ण लाभों के बारे में जानें: जलवायु निगरानी, ​​चिकित्सा प्रगति, और जल शोधन।",
+                climateMonitoring: "जलवायु निगरानी",
+                climateMonitoringDesc: "इंटरैक्टिव विज़ुअलाइज़ेशन जो दिखाते हैं कि आईएसएस डेटा जलवायु विज्ञान में कैसे योगदान देता है।",
+                medicalAdvances: "चिकित्सा प्रगति",
+                medicalAdvancesDesc: "स्वास्थ्य और जीव विज्ञान में सफलताओं के लिए अग्रणी आईएसएस अनुसंधान की व्याख्या।",
+                waterPurification: "जल शोधन",
+                waterPurificationDesc: "बंद-लूप जीवन समर्थन प्रणालियों और टिकाऊ पानी के लिए उनके स्थलीय अनुप्रयोगों का विवरण देने वाले मॉड्यूल।",
+                tapForMore: "विवरण के लिए टैप करें",
+                selectModulePrompt: "विस्तृत शोध जानकारी देखने के लिए ऊपर एक मॉड्यूल चुनें।",
+                climateMonitoringDetail: "आईएसएस निरंतर पृथ्वी अवलोकन के लिए एक अद्वितीय, स्थिर मंच प्रदान करता है, जो वैश्विक जलवायु संकेतकों जैसे बादल कवरेज, वनों की कटाई और ध्रुवीय बर्फ पिघलने की निगरानी करता है। यह डेटा जमीन-आधारित मॉडलों को मान्य करता है और जलवायु परिवर्तन में महत्वपूर्ण दीर्घकालिक अंतर्दृष्टि प्रदान करता है।",
+                medicalAdvancesDetail: "सूक्ष्म-गुरुत्वाकर्षण में मानव स्वास्थ्य का अध्ययन करने से हड्डी के घनत्व के नुकसान, मांसपेशियों के शोष और प्रतिरक्षा प्रणाली में बदलावों पर अनुसंधान में तेजी आती है, जो पृथ्वी पर बुजुर्गों या स्थिर लोगों के सामने आने वाली चुनौतियों को दर्शाता है। निष्कर्ष सीधे इन स्थितियों के लिए नए उपचारों में योगदान करते हैं।",
+                waterPurificationDetail: "आईएसएस जीवन समर्थन प्रणालियाँ पसीने और मूत्र सहित सभी पानी का 98% पुनर्चक्रण करती हैं। इस अति-कुशल तकनीक को आपदा राहत, दूरदराज के समुदायों और पृथ्वी पर टिकाऊ जल प्रबंधन के लिए अनुकूलित किया जा रहा है, जो अंतरिक्ष और हमारे ग्रह दोनों पर भविष्य में मानव अस्तित्व के लिए आवश्यक साबित होता है।",
+
+                comingSoon: "Feature development in progress...",
+                currentLang: "हिन्दी",
+                issLat: "अक्षांश",
+                issLon: "देशांतर",
+                issAlt: "ऊंचाई (किमी)",
+                issVel: "वेग (किमी/घंटा)",
+                liveTracking: "लाइव आईएसएस स्थिति डेटा",
+            }
+        };
+
+        // --- CORE UTILITIES ---
+        const t = (key) => translations[language][key] || key;
+        const tFunc = (key, ...args) => {
+            const translation = translations[language][key];
+            if (typeof translation === 'function') {
+                return translation(...args);
+            }
+            return translation || key;
+        };
+
+        const navigate = (page) => {
+            if (currentPage !== page) {
+                // Stop and clean up any running simulations/3D scenes
+                destroyThreeJs();
+                if (currentPage === 'microgravity' && isSimRunning) {
+                    stopSimulation();
+                }
+                currentPage = page;
+                renderApp();
+            }
+        };
+
+        const toggleLanguage = () => {
+            language = language === 'en' ? 'hi' : 'en';
+            renderApp();
+        };
+
+        const handleAuth = () => {
+            isAuthenticated = !isAuthenticated;
+            console.log(isAuthenticated ? "Mock Login" : "Mock Logout");
+            renderApp();
+        };
+
+        // --- DATA FETCHING & UPDATING ---
+        const fetchIssData = async () => {
+            try {
+                const response = await fetch(ISS_API);
+                if (!response.ok) throw new Error('ISS data fetch failed');
+                const data = await response.json();
+                issPosition = data;
+                updateIssDataPanel();
+                if (currentPage === 'cupola') {
+                    updateThreeJsPosition();
+                }
+            } catch (e) {
+                console.error("Failed to fetch ISS data:", e);
+                // Fallback to mock data on failure
+                if (!issPosition) {
+                    issPosition = { latitude: 0, longitude: 0, altitude: 420, velocity: 7.66, timestamp: Date.now() / 1000 };
+                }
+            }
+        };
+
+        const updateIssDataPanel = () => {
+            const panel = document.getElementById('iss-data-panel');
+            if (!panel || !issPosition) return;
+
+            panel.querySelector('#iss-lat').textContent = issPosition.latitude.toFixed(4) + '°';
+            panel.querySelector('#iss-lon').textContent = issPosition.longitude.toFixed(4) + '°';
+            panel.querySelector('#iss-alt').textContent = issPosition.altitude.toFixed(2);
+            panel.querySelector('#iss-vel').textContent = (issPosition.velocity * 3600).toFixed(2);
+            panel.querySelector('#iss-timestamp').textContent = new Date(issPosition.timestamp * 1000).toLocaleTimeString();
+        };
+
+        const issDataPanelHTML = () => `
+            <div id="iss-data-panel" class="bg-slate-800 p-4 rounded-xl shadow-inner border border-slate-700">
+                <h4 class="font-bold text-lg text-amber-400 mb-3">${t('liveTracking')}</h4>
+                <div class="grid grid-cols-2 gap-4 text-sm">
+                    <div class="space-y-1">
+                        <p class="text-slate-400">${t('issLat')}:</p>
+                        <p id="iss-lat" class="text-white font-mono text-xl">${issPosition ? issPosition.latitude.toFixed(4) : '...'}</p>
+                    </div>
+                    <div class="space-y-1">
+                        <p class="text-slate-400">${t('issLon')}:</p>
+                        <p id="iss-lon" class="text-white font-mono text-xl">${issPosition ? issPosition.longitude.toFixed(4) : '...'}</p>
+                    </div>
+                    <div class="space-y-1">
+                        <p class="text-slate-400">${t('issAlt')}:</p>
+                        <p id="iss-alt" class="text-white font-mono text-xl">${issPosition ? issPosition.altitude.toFixed(2) : '...'}</p>
+                    </div>
+                    <div class="space-y-1">
+                        <p class="text-slate-400">${t('issVel')}:</p>
+                        <p id="iss-vel" class="text-white font-mono text-xl">${issPosition ? (issPosition.velocity * 3600).toFixed(2) : '...'}</p>
+                    </div>
+                </div>
+                <p class="text-xs text-slate-500 mt-3">Updated: <span id="iss-timestamp">${issPosition ? new Date(issPosition.timestamp * 1000).toLocaleTimeString() : '...'}</span></p>
+            </div>
+        `;
+
+        // --- GENERAL THREE.JS UTILITIES ---
+
+        function destroyThreeJs() {
+            if (renderer) {
+                renderer.dispose();
+                const canvas = renderer.domElement;
+                if (canvas && canvas.parentNode) {
+                    canvas.parentNode.removeChild(canvas);
+                }
+            }
+            scene = null;
+            camera = null;
+            renderer = null;
+            earthMesh = null;
+            issMarker = null;
+            floatingObjects = [];
+            isThreeJsInitialized = false;
+        }
+        
+        // --- THREE.JS CUPOLA IMPLEMENTATION ---
+
+        function updateThreeJsPosition() {
+            if (!issPosition || !issMarker || !earthMesh) return;
+            
+            const radius = 1.5;
+            const latRad = issPosition.latitude * (Math.PI / 180);
+            const lonRad = -issPosition.longitude * (Math.PI / 180);
+
+            const x = radius * Math.cos(latRad) * Math.sin(lonRad);
+            const y = radius * Math.sin(latRad);
+            const z = radius * Math.cos(latRad) * Math.cos(lonRad);
+
+            const offset = 0.05; 
+            issMarker.position.set(x * (1 + offset), y * (1 + offset), z * (1 + offset));
+        }
+        
+        function initThreeJs(containerId) {
+            if (typeof window.THREE === 'undefined') return;
+
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(width, height);
+            
+            container.appendChild(renderer.domElement);
+            
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 3, 5);
+            scene.add(directionalLight);
+            
+            // Earth (Placeholder Blue sphere)
+            const earthGeometry = new THREE.SphereGeometry(1.5, 64, 64);
+            const earthMaterial = new THREE.MeshPhongMaterial({ color: 0x0033aa, shininess: 10, specular: 0xcccccc });
+            earthMesh = new THREE.Mesh(earthGeometry, earthMaterial);
+            scene.add(earthMesh);
+
+            // ISS Marker (Yellow Box)
+            const issGeometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+            const issMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+            issMarker = new THREE.Mesh(issGeometry, issMaterial);
+            scene.add(issMarker);
+
+            camera.position.z = 4;
+            
+            const animateCupola = () => {
+                requestAnimationFrame(animateCupola);
+                if (earthMesh) earthMesh.rotation.y += earthRotationSpeed;
+                if (renderer) renderer.render(scene, camera);
+            };
+            animateCupola();
+            
+            // Mouse controls for Earth rotation
+            container.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('resize', handleResize);
+            
+            updateThreeJsPosition();
+            isThreeJsInitialized = true;
+        }
+        
+        // --- THREE.JS MICROGRAVITY IMPLEMENTATION ---
+
+        function initMicrogravitySim(containerId) {
+            if (typeof window.THREE === 'undefined') return;
+
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111827); // Dark interior color
+            camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 100);
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+            renderer.setSize(width, height);
+            
+            container.appendChild(renderer.domElement);
+            
+            // Lighting
+            const light = new THREE.PointLight(0xffffff, 1, 100);
+            light.position.set(0, 5, 5);
+            scene.add(light);
+            scene.add(new THREE.AmbientLight(0x404040));
+
+            // Floating Equipment (Cubes)
+            floatingObjects = [];
+            const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+            for (let i = 0; i < simObjectCount; i++) {
+                const material = new THREE.MeshPhongMaterial({ color: Math.random() * 0xffffff });
+                const cube = new THREE.Mesh(geometry, material);
+                // Random starting positions
+                cube.position.set(
+                    (Math.random() - 0.5) * 3,
+                    (Math.random() - 0.5) * 3,
+                    (Math.random() - 0.5) * 3
+                );
+                // Store initial velocities for drift
+                cube.userData.velocity = new THREE.Vector3(
+                    (Math.random() - 0.5) * objectDriftSpeed,
+                    (Math.random() - 0.5) * objectDriftSpeed,
+                    (Math.random() - 0.5) * objectDriftSpeed
+                );
+                scene.add(cube);
+                floatingObjects.push(cube);
+            }
+            
+            camera.position.z = 4;
+            
+            const animateMicrogravity = () => {
+                requestAnimationFrame(animateMicrogravity);
+                
+                // Mock physics drift
+                if (isSimRunning) {
+                    floatingObjects.forEach(obj => {
+                        obj.position.add(obj.userData.velocity);
+                        obj.rotation.x += obj.userData.velocity.x * 10;
+                        obj.rotation.y += obj.userData.velocity.y * 10;
+                        
+                        // Simple boundary detection (bounce off walls)
+                        const bounds = 1.8;
+                        if (Math.abs(obj.position.x) > bounds) obj.userData.velocity.x *= -1;
+                        if (Math.abs(obj.position.y) > bounds) obj.userData.velocity.y *= -1;
+                        if (Math.abs(obj.position.z) > bounds) obj.userData.velocity.z *= -1;
+                    });
+                }
+                
+                if (renderer) renderer.render(scene, camera);
+            };
+            animateMicrogravity();
+            
+            // Mouse controls for camera (user interaction with environment)
+            container.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('resize', handleResize);
+
+            isThreeJsInitialized = true;
+        }
+
+        // --- THREE.JS EVENT HANDLERS (Shared) ---
+        
+        const onMouseDown = (event) => {
+            isDragging = true;
+            previousMousePosition.x = event.clientX;
+            previousMousePosition.y = event.clientY;
+        };
+
+        const onMouseMove = (event) => {
+            if (!isDragging || !camera) return;
+            
+            const deltaX = event.clientX - previousMousePosition.x;
+            const deltaY = event.clientY - previousMousePosition.y;
+
+            const rotationSpeed = 0.005; 
+            
+            if (currentPage === 'cupola' && earthMesh) {
+                earthMesh.rotation.y += deltaX * rotationSpeed;
+                earthMesh.rotation.x += deltaY * rotationSpeed;
+                earthMesh.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, earthMesh.rotation.x));
+            } else if (currentPage === 'microgravity') {
+                // Rotate the whole scene/camera perspective
+                scene.rotation.y += deltaX * rotationSpeed;
+                scene.rotation.x += deltaY * rotationSpeed;
+            }
+
+            previousMousePosition.x = event.clientX;
+            previousMousePosition.y = event.clientY;
+        };
+
+        const onMouseUp = () => {
+            isDragging = false;
+        };
+        
+        const handleResize = () => {
+            if (!camera || !renderer) return;
+
+            const container = renderer.domElement.parentNode;
+            if (!container) return;
+
+            const newWidth = container.clientWidth;
+            const newHeight = container.clientHeight;
+            camera.aspect = newWidth / newHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(newWidth, newHeight);
+        };
+
+        // --- MICROGRAVITY SIMULATION LOGIC ---
+        
+        const updateSimScoreDisplay = () => {
+            const scoreElement = document.getElementById('sim-score');
+            if (scoreElement) {
+                scoreElement.textContent = simScore;
+            }
+            const simButton = document.getElementById('sim-toggle-button');
+            if (simButton) {
+                simButton.textContent = isSimRunning ? t('stopChallenge') : t('startChallenge');
+                simButton.className = `px-6 py-2 font-semibold rounded-full hover:shadow-lg transition shadow-md ${
+                    isSimRunning ? 'bg-amber-600 text-slate-900 hover:bg-amber-700' : 'bg-red-600 text-white hover:bg-red-700'
+                }`;
+            }
+        };
+
+        const scoreTick = () => {
+            if (isSimRunning) {
+                // Mock scoring logic: score increases randomly 
+                const scoreChange = Math.floor(Math.random() * 5) + 1;
+                simScore += scoreChange;
+                
+                // Mock visual feedback: change a random object's color slightly
+                if (floatingObjects.length > 0) {
+                    const target = floatingObjects[Math.floor(Math.random() * floatingObjects.length)];
+                    target.material.color.setHex(0x50ff50); // Flash green
+                    setTimeout(() => target.material.color.setHex(Math.random() * 0xaaaaaa), 200);
+                }
+                
+                updateSimScoreDisplay();
+                
+                // End condition for mock challenge
+                if (simScore >= 100) {
+                    stopSimulation();
+                    const endMessage = document.getElementById('sim-placeholder');
+                    if (endMessage) {
+                        endMessage.innerHTML = `<p class="text-3xl text-green-400 font-bold">Challenge Complete!</p><p class="text-xl text-slate-300 mt-2">Final Score: ${simScore}</p>`;
+                    }
+                }
+            }
+        };
+
+        const startSimulation = () => {
+            if (isSimRunning) {
+                stopSimulation();
+                return;
+            }
+            
+            // Reset for new simulation
+            simScore = 0;
+            isSimRunning = true;
+            
+            // Restore placeholder text (if challenge ended previously)
+            const simTipText = `<br/><span class='text-base text-slate-500 block mt-4'>${t('simTip')}</span>`;
+            const endMessage = document.getElementById('sim-placeholder');
+            if (endMessage) {
+                endMessage.innerHTML = `<p class="text-2xl text-red-500 font-mono text-center p-8">${t('simPlaceholder')}${simTipText}</p>`;
+            }
+
+            // Start score ticking (mock physics)
+            simInterval = setInterval(scoreTick, 500);
+            updateSimScoreDisplay();
+        };
+
+        const stopSimulation = () => {
+            if (simInterval) {
+                clearInterval(simInterval);
+            }
+            isSimRunning = false;
+            updateSimScoreDisplay();
+        };
+
+        // --- RENDERING FUNCTIONS ---
+        
+        const renderHeader = () => {
+            const t = (key) => translations[language][key] || key;
+            const navItems = ['home', 'cupola', 'microgravity', 'education'].map(page => `
+                <button
+                    onclick="navigate('${page}')"
+                    class="px-3 py-1 rounded-full text-sm font-medium transition duration-200 ${
+                        currentPage === page
+                            ? 'bg-amber-500 text-slate-900 shadow-md'
+                            : 'text-gray-300 hover:bg-slate-700 hover:text-white'
+                    }"
+                >
+                    ${t(page)}
+                </button>
+            `).join('');
+
+            document.getElementById('header-container').innerHTML = `
+                <header class="bg-slate-900/90 backdrop-blur-sm shadow-lg sticky top-0 z-50">
+                    <nav class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                        <div class="flex items-center justify-between h-16">
+                            <div class="flex items-center space-x-4">
+                                <span class="font-extrabold text-2xl text-amber-400 tracking-wider">${t('title')}</span>
+                                <span class="text-xs text-slate-500 hidden md:block">${t('tagline')}</span>
+                            </div>
+                            
+                            <div class="flex items-center space-x-2 md:space-x-4">
+                                ${navItems}
+                                
+                                <button
+                                    onclick="toggleLanguage()"
+                                    class="p-2 rounded-full text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition"
+                                    title="Switch to ${language === 'en' ? 'Hindi' : 'English'}"
+                                >
+                                    🌐 ${language === 'en' ? 'HI' : 'EN'}
+                                </button>
+                                
+                                <button
+                                    onclick="handleAuth()"
+                                    class="px-3 py-1 rounded-full text-sm font-semibold bg-red-500 text-white hover:bg-red-600 transition"
+                                >
+                                    ${isAuthenticated ? t('logout') : t('login')}
+                                </button>
+                            </div>
+                        </div>
+                    </nav>
+                </header>
+            `;
+        };
+
+        const renderCard = (title, description, icon, color, page) => `
+            <button onclick="navigate('${page}')" class="flex flex-col items-center text-left p-6 rounded-xl bg-slate-800 shadow-2xl hover:shadow-xl transition transform hover:scale-[1.03] border-t-4 border-${color}-500 group">
+                <div class="text-6xl mb-4 text-${color}-400 transition group-hover:animate-pulse">${icon}</div>
+                <h3 class="text-xl font-bold text-white mb-2">${title}</h3>
+                <p class="text-sm text-slate-400">${description}</p>
+            </button>
+        `;
+
+        const renderPageHome = () => {
+            const mainContent = document.getElementById('main-content');
+            mainContent.innerHTML = `
+                <div class="py-12">
+                    <div class="text-center mb-10">
+                        <h1 class="text-4xl md:text-5xl font-extrabold text-amber-400 mb-2">${tFunc('welcomeMsg', user.name)}</h1>
+                        <p class="text-lg text-slate-300">${t('dashboardDesc')}</p>
+                    </div>
+                    
+                    <div class="grid md:grid-cols-4 gap-8 max-w-7xl mx-auto">
+                        <div class="md:col-span-1">
+                            ${issDataPanelHTML()}
+                        </div>
+                        <div class="md:col-span-3 grid grid-cols-1 sm:grid-cols-3 gap-8">
+                            ${renderCard(t('cupola'), t('cupolaDesc'), "🌍", "blue", "cupola")}
+                            ${renderCard(t('microgravity'), t('microgravityDesc'), "🤸", "red", "microgravity")}
+                            ${renderCard(t('education'), t('educationDesc'), "🔬", "green", "education")}
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderPageCupola = () => {
+            const mainContent = document.getElementById('main-content');
+            mainContent.innerHTML = `
+                <div class="py-10">
+                    <h2 class="text-3xl font-bold text-white mb-4 border-b-2 border-blue-500 pb-2">${t('cupola')}</h2>
+                    <p class="text-slate-400 mb-6">${t('cupolaDesc')}</p>
+
+                    <div class="grid lg:grid-cols-4 gap-6">
+                        <div class="lg:col-span-3 bg-slate-900 rounded-xl h-[70vh] flex items-center justify-center border border-blue-600 overflow-hidden relative">
+                            <div id="three-container" class="canvas-container cursor-grab">
+                                <div class="absolute inset-0 flex items-center justify-center text-blue-400 three-error" style="display: block;">
+                                    Loading 3D Scene...
+                                </div>
+                            </div>
+                        </div>
+                        <div class="lg:col-span-1">
+                            ${issDataPanelHTML()}
+                        </div>
+                    </div>
+                </div>
+            `;
+            // Initialize Cupola Three.js scene
+            if (typeof window.THREE !== 'undefined') initThreeJs('three-container');
+        };
+
+
+        const renderPageMicrogravity = () => {
+            const mainContent = document.getElementById('main-content');
+            
+            const challengeList = [
+                { name: t('challengeRetrieve'), desc: t('challengeRetrieveDesc'), icon: '🖐️' },
+                { name: t('challengeFluid'), desc: t('challengeFluidDesc'), icon: '🧪' },
+                { name: t('challengeRepair'), desc: t('challengeRepairDesc'), icon: '🔧' },
+            ];
+
+            const challengesHTML = challengeList.map(c => `
+                <div class="bg-slate-700/50 p-4 rounded-lg flex items-center space-x-4 border border-slate-700">
+                    <div class="text-3xl">${c.icon}</div>
+                    <div>
+                        <h4 class="font-bold text-white">${c.name}</h4>
+                        <p class="text-sm text-slate-400">${c.desc}</p>
+                    </div>
+                </div>
+            `).join('');
+            
+            const simTipText = `<br/><span class='text-base text-slate-500 block mt-4'>${t('simTip')}</span>`;
+
+
+            mainContent.innerHTML = `
+                <div class="py-10">
+                    <h2 class="text-3xl font-bold text-white mb-4 border-b-2 border-red-500 pb-2">${t('microgravity')}</h2>
+                    <p class="text-slate-400 mb-6">${t('microgravityDesc')}</p>
+                    
+                    <div class="grid lg:grid-cols-3 gap-6">
+                        <div class="lg:col-span-2 bg-slate-900 rounded-xl h-[70vh] flex flex-col p-6 border border-red-600">
+                            <h3 class="text-xl font-bold text-red-400 mb-4">Astronaut Training Module</h3>
+                            <div class="flex-grow flex items-center justify-center overflow-hidden relative">
+                                <div id="sim-canvas-container" class="canvas-container cursor-grab">
+                                    <p id="sim-placeholder" class="absolute inset-0 flex items-center justify-center text-2xl text-red-500 font-mono text-center p-8 z-10 bg-slate-900/50 backdrop-blur-sm">
+                                        ${t('simPlaceholder')}
+                                        ${simTipText}
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="flex justify-between items-center mt-4 pt-4 border-t border-slate-700">
+                                <div class="text-lg">
+                                    <span class="text-slate-400">${t('currentScore')}:</span> <span id="sim-score" class="font-bold text-white">${simScore}</span>
+                                </div>
+                                <button id="sim-toggle-button" onclick="startSimulation()" class="px-6 py-2 bg-red-600 text-white font-semibold rounded-full hover:bg-red-700 transition shadow-lg">
+                                    ${t('startChallenge')}
+                                </button>
+                            </div>
+                        </div>
+                        <div class="lg:col-span-1 space-y-4">
+                            <h3 class="text-xl font-bold text-white border-b border-slate-700 pb-2">${t('availableChallenges')}</h3>
+                            ${challengesHTML}
+                            <div class="bg-slate-800 p-4 rounded-lg text-sm text-slate-400">
+                                <p class="font-bold text-amber-400">${t('trainingTip')}</p>
+                                <p>${t('trainingTipContent')}</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            // Initialize Microgravity Three.js scene
+            if (typeof window.THREE !== 'undefined') initMicrogravitySim('sim-canvas-container');
+            updateSimScoreDisplay();
+        };
+
+        // Function to update the education detail pane
+        const showEducationDetail = (titleKey, detailKey) => {
+            const detailElement = document.getElementById('education-detail-pane');
+            if (!detailElement) return;
+            
+            // Get translated strings
+            const title = translations[language][titleKey] || titleKey;
+            const details = translations[language][detailKey] || detailKey;
+            
+            detailElement.innerHTML = `
+                <h3 class="text-2xl font-bold text-amber-400 mb-4">${title}</h3>
+                <p class="text-slate-300 mb-4 text-lg">${details}</p>
+                <p class="text-xs text-slate-500">
+                    ${t('comingSoon')}
+                </p>
+            `;
+            
+            detailElement.scrollIntoView({ behavior: 'smooth' });
+        };
+
+
+        const renderPageEducation = () => {
+            const modules = [
+                { titleKey: 'climateMonitoring', descKey: 'climateMonitoringDesc', icon: "🌤️", color: "green", detailKey: 'climateMonitoringDetail' },
+                { titleKey: 'medicalAdvances', descKey: 'medicalAdvancesDesc', icon: "🧬", color: "purple", detailKey: 'medicalAdvancesDetail' },
+                { titleKey: 'waterPurification', descKey: 'waterPurificationDesc', icon: "💧", color: "teal", detailKey: 'waterPurificationDetail' },
+            ];
+            
+            const moduleCards = modules.map((mod) => `
+                <button 
+                    onclick="showEducationDetail('${mod.titleKey}', '${mod.detailKey}')" 
+                    class="p-6 rounded-xl bg-slate-800 shadow-xl border-l-4 border-${mod.color}-500 hover:bg-slate-700 transition text-left h-full"
+                >
+                    <div class="text-4xl mb-3">${mod.icon}</div>
+                    <h3 class="text-xl font-bold text-white mb-2">${t(mod.titleKey)}</h3>
+                    <p class="text-slate-400 text-sm">${t(mod.descKey)}</p>
+                    <span class="mt-3 inline-block text-${mod.color}-300 font-semibold text-xs">${t('tapForMore')} &rarr;</span>
+                </button>
+            `).join('');
+
+            const mainContent = document.getElementById('main-content');
+            mainContent.innerHTML = `
+                <div class="py-10">
+                    <h2 class="text-3xl font-bold text-white mb-4 border-b-2 border-green-500 pb-2">${t('education')}</h2>
+                    <p class="text-slate-400 mb-8">${t('educationDesc')}</p>
+                    
+                    <div class="grid md:grid-cols-3 gap-6 mb-10">
+                        ${moduleCards}
+                    </div>
+                    
+                    <div id="education-detail-pane" class="min-h-[200px] bg-slate-800 p-8 rounded-xl border border-green-600">
+                        <p class="text-center text-slate-500 text-lg">${t('selectModulePrompt')}</p>
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderFooter = () => {
+            document.getElementById('footer-content').innerHTML = `
+                SpaceSensAR Web MVP | Language: ${t('currentLang')} | Built for NASA Space Apps Challenge 2025
+            `;
+        };
+
+        const renderApp = () => {
+            if (!isAuthenticated) {
+                // Simplified initial/loading screen
+                document.getElementById('main-content').innerHTML = `
+                    <div class="text-center py-20 text-slate-400">
+                        <p class="text-2xl">${t('title')}</p>
+                        <p class="mt-4">Authenticating with Replit...</p>
+                    </div>
+                `;
+            } else {
+                renderHeader();
+                renderFooter();
+                switch (currentPage) {
+                    case 'cupola':
+                        renderPageCupola();
+                        break;
+                    case 'microgravity':
+                        renderPageMicrogravity();
+                        break;
+                    case 'education':
+                        renderPageEducation();
+                        break;
+                    case 'home':
+                    default:
+                        renderPageHome();
+                        break;
+                }
+            }
+        };
+
+        // --- INITIALIZATION ---
+        window.onload = () => {
+            // Mock Auth check
+            setTimeout(() => {
+                isAuthenticated = true;
+                renderApp();
+            }, 1000);
+
+            // Initial data fetch and polling setup
+            fetchIssData();
+            setInterval(fetchIssData, 5000);
+            
+            // Initial render before auth completes
+            renderApp();
+        };
+
+    </script>
+</body>
+</html>
